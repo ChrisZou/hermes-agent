@@ -111,6 +111,61 @@ def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, exp
     assert settings.require_mention is expected
 
 
+@pytest.mark.parametrize(
+    "extra, expected",
+    [({}, True), ({"ignore_other_mentions": True}, True), ({"ignore_other_mentions": False}, False)],
+)
+def test_feishu_load_settings_ignore_other_mentions(monkeypatch, extra, expected):
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    settings = FeishuAdapter._load_settings(extra=extra)
+    assert settings.ignore_other_mentions is expected
+
+
+def test_free_response_group_ignores_message_mentioning_other_user():
+    adapter = make_adapter_skeleton(require_mention=False, group_policy="open")
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    other = SimpleNamespace(
+        id=SimpleNamespace(open_id="ou_other", user_id=None),
+        name="Other",
+    )
+    message = make_message(chat_type="group", mentions=[other])
+    assert adapter._admit(sender, message) == "group_policy_rejected"
+
+
+def test_free_response_group_ignores_at_all():
+    adapter = make_adapter_skeleton(require_mention=False, group_policy="open")
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    message = make_message(chat_type="group")
+    message.content = '{"text":"@_all hello"}'
+    assert adapter._admit(sender, message) == "group_policy_rejected"
+
+
+def test_free_response_group_allows_plain_message():
+    adapter = make_adapter_skeleton(require_mention=False, group_policy="open")
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    assert adapter._admit(sender, make_message(chat_type="group")) is None
+
+
+def test_free_response_group_allows_message_that_also_mentions_hermes():
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_me", require_mention=False, group_policy="open",
+    )
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    hermes = SimpleNamespace(
+        id=SimpleNamespace(open_id="ou_me", user_id=None),
+        name="Hermes",
+    )
+    other = SimpleNamespace(
+        id=SimpleNamespace(open_id="ou_other", user_id=None),
+        name="Other",
+    )
+    message = make_message(chat_type="group", mentions=[hermes, other])
+    assert adapter._admit(sender, message) is None
+
+
 def test_feishu_load_settings_parses_per_group_require_mention(monkeypatch):
     from plugins.platforms.feishu.adapter import FeishuAdapter
 

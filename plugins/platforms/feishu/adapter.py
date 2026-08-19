@@ -396,6 +396,9 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    # In free-response groups, do not jump into a message explicitly directed
+    # at another user (or @all) unless Hermes is also mentioned.
+    ignore_other_mentions: bool = True
 
 
 @dataclass
@@ -1587,6 +1590,7 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            ignore_other_mentions=_to_boolean(extra.get("ignore_other_mentions", True)),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1619,6 +1623,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._ignore_other_mentions = settings.ignore_other_mentions
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -3183,7 +3188,13 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        auto_create_thread = self._auto_create_thread_enabled()
+        thread_id = (
+            getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        ) if auto_create_thread else None
+        # Always resolve reply-to context for the agent, even when thread
+        # creation is disabled — the agent needs the quoted message to
+        # understand context.  Only outbound thread_id is gated by the flag.
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
@@ -4184,7 +4195,15 @@ class FeishuAdapter(BasePlatformAdapter):
             getattr(sender, "sender_id", None), chat_id, is_bot=is_bot,
         ):
             return "group_policy_rejected"
-        if require_mention and not self._mentions_self(message):
+        mentions_self = self._mentions_self(message)
+        if require_mention and not mentions_self:
+            return "group_policy_rejected"
+        if (
+            not require_mention
+            and self._ignore_other_mentions
+            and self._has_any_mention(message)
+            and not mentions_self
+        ):
             return "group_policy_rejected"
         return None
 
@@ -4242,10 +4261,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # --- Mention detection ----------------------------------------------------
 
     def _mentions_self(self, message: Any) -> bool:
-        # @_all is Feishu's @everyone placeholder.
         raw_content = getattr(message, "content", "") or ""
-        if "@_all" in raw_content:
-            return True
         mentions = getattr(message, "mentions", None) or []
         if mentions and self._message_mentions_bot(mentions):
             return True
@@ -4256,6 +4272,21 @@ class FeishuAdapter(BasePlatformAdapter):
             bot=self._bot_identity(),
         )
         return self._post_mentions_bot(normalized.mentions)
+
+    def _has_any_mention(self, message: Any) -> bool:
+        """Return whether a group message addresses any user or @all."""
+        raw_content = getattr(message, "content", "") or ""
+        if "@_all" in raw_content:
+            return True
+        if getattr(message, "mentions", None):
+            return True
+        normalized = normalize_feishu_message(
+            message_type=getattr(message, "message_type", "") or "",
+            raw_content=raw_content,
+            mentions=getattr(message, "mentions", None),
+            bot=self._bot_identity(),
+        )
+        return bool(normalized.mentions)
 
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
         # IDs trump names: when both sides have open_id (or both user_id),
@@ -4510,6 +4541,21 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    def _auto_create_thread_enabled(self) -> bool:
+        """Return whether Feishu replies should use message threads/topics.
+
+        The Feishu/Lark adapter historically mirrored inbound ``thread_id`` /
+        ``root_id`` into outbound replies.  Users who set ``autoCreateThread:
+        false`` expect ordinary chat messages instead, so this single switch
+        suppresses both inbound thread session metadata and outbound reply API
+        usage.
+        """
+        config = getattr(self, "config", None)
+        raw_extra = getattr(config, "extra", None)
+        extra = raw_extra if isinstance(raw_extra, dict) else {}
+        raw = extra.get("autoCreateThread", extra.get("auto_create_thread", True))
+        return _to_boolean(raw)
+
     async def _send_raw_message(
         self,
         *,
@@ -4519,6 +4565,16 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        metadata = metadata or None
+        if not self._auto_create_thread_enabled():
+            # Hard opt-out for Feishu topic/thread replies.  Even if the
+            # gateway/session layer supplies reply anchors from the inbound
+            # event, send a normal message to the chat instead of using
+            # im.v1.message.reply or receive_id_type=thread_id.
+            reply_to = None
+            if metadata and metadata.get("thread_id"):
+                metadata = {k: v for k, v in metadata.items() if k != "thread_id"}
+
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
