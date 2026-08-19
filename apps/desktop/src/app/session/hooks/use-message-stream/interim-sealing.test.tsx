@@ -240,7 +240,7 @@ describe('useMessageStream interim text sealing', () => {
     await interim('old interim text')
     // A genuinely new turn begins — message.start resets interimBoundaryPending.
     // Production ordering: mid-turn compaction-resume events do NOT include
-    // message.start (COMPACTION_RESUME_EVENT_TYPES in gateway-event.ts), and
+    // message.start (COMPACTION_RESUME_EVENT_TYPES in gateway-event/index.ts), and
     // the TUI gateway emits message.complete BEFORE goal-followup starts
     // (tui_gateway/server.py), so a previewed final arriving after the reset
     // is a DISTINCT reply, not a rewrite of the interim. It must append its

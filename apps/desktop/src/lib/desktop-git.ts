@@ -122,7 +122,7 @@ export function desktopGit(): GitBridge | undefined {
 // method" wrapper), and the Electron JSON-guard ("endpoint is likely
 // missing"). Transient failures (timeouts, 5xx, connection refused) must NOT
 // match — they are retryable, not a capability verdict. Mirrors the sidebar
-// batch-endpoint detector in hermes.ts.
+// batch-endpoint detector in api/sessions.ts.
 export function isGitEndpointMissingError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err)
 
