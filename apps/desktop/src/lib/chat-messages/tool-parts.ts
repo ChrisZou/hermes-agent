@@ -392,7 +392,7 @@ export function sealOpenToolParts(messages: ChatMessage[]): ChatMessage[] {
 
 // ── Stored-tool conversion (hydration path) ────────────────────────────────
 
-function textFromUnknown(value: unknown, depth = 0): string {
+export function textFromUnknown(value: unknown, depth = 0): string {
   if (typeof value === 'string') {
     return value
   }
@@ -593,5 +593,3 @@ export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
     return changed ? { ...message, parts } : message
   })
 }
-
-export { textFromUnknown }
