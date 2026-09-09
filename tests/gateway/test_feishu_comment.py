@@ -180,6 +180,50 @@ class TestSanitizeCommentText(unittest.TestCase):
         self.assertIn("&gt;", result)
 
 
+class TestCommentAgentCapabilities(unittest.TestCase):
+    def test_comment_prompt_routes_document_edits_through_lark_doc_skill(self):
+        from plugins.platforms.feishu.feishu_comment import _COMMON_INSTRUCTIONS
+
+        self.assertIn("lark-doc", _COMMON_INSTRUCTIONS)
+        self.assertIn("--as bot", _COMMON_INSTRUCTIONS)
+        self.assertIn("modify", _COMMON_INSTRUCTIONS.lower())
+        self.assertIn("untrusted data", _COMMON_INSTRUCTIONS.lower())
+
+    @patch("run_agent.AIAgent")
+    @patch("hermes_cli.tools_config._get_platform_tools")
+    @patch("gateway.run._load_gateway_config")
+    @patch(
+        "plugins.platforms.feishu.feishu_comment._resolve_model_and_runtime",
+        return_value=("test-model", {"provider": "test-provider"}),
+    )
+    def test_comment_agent_inherits_feishu_platform_toolsets(
+        self, _mock_runtime, mock_load_config, mock_platform_tools, mock_agent_cls,
+    ):
+        from plugins.platforms.feishu.feishu_comment import _run_comment_agent
+
+        mock_load_config.return_value = {"platform_toolsets": {"feishu": ["hermes-feishu"]}}
+        mock_platform_tools.return_value = {
+            "terminal", "file", "skills", "cronjob", "browser", "feishu_doc", "feishu_drive",
+        }
+        mock_agent_cls.return_value.run_conversation.return_value = {
+            "final_response": "已修改",
+            "messages": [],
+        }
+
+        response = _run_comment_agent("修改这篇文档", Mock(), session_key="")
+
+        self.assertEqual(response, "已修改")
+        kwargs = mock_agent_cls.call_args.kwargs
+        self.assertEqual(kwargs["platform"], "feishu")
+        self.assertTrue(
+            {"terminal", "file", "skills", "feishu_doc", "feishu_drive"}.issubset(
+                set(kwargs["enabled_toolsets"])
+            )
+        )
+        self.assertTrue({"cronjob", "browser"}.isdisjoint(kwargs["enabled_toolsets"]))
+        mock_platform_tools.assert_called_once_with(mock_load_config.return_value, "feishu")
+
+
 class TestWikiReverseLookup(unittest.TestCase):
     def _run(self, coro):
         return asyncio.get_event_loop().run_until_complete(coro)
